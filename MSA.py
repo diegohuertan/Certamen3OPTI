@@ -50,11 +50,38 @@ class Problem:
             return False
         return True
 
-    def fit(self, x):
+    def fit(self, x, w_valor=0.6, w_costo=0.4):
         X, C, V = x[0:5], x[5:10], x[10:15]
         valorization = sum(X[i] * V[i] for i in range(5))
         cost = sum(X[i] * C[i] for i in range(5))
-        return (valorization, -cost)
+        
+        # Valores de referencia para normalización
+        # Mejor valorización posible (todos los máximos)
+        valorization_best = (9*78 + 6*90 + 25*60 + 3*68 + 30*30)  # 3846
+
+        # Peor costo factible observado
+        cost_worst = (9*186 + 6*300 + 25*80 + 3*108 + 30*20)      # 6398
+
+        cost_best = (0*160 + 0*300 + 0*40 + 0*100 + 0*10)       # 0 (mejor caso teórico)
+        
+        # Escalarización académica normalizada
+        # fp(X) / ep(X^best) para maximización
+        term1 = w_valor * (valorization / valorization_best)
+        
+        # (C - fq(X)) / (C - eq(X^best)) para minimización
+        if cost_worst > cost_best:
+            term2 = w_costo * ((cost_worst - cost) / (cost_worst - cost_best))
+        else:
+            term2 = w_costo * (1 - cost / cost_worst)  # Fallback si denominador es 0
+        
+        return term1 + term2  # Escalarización académica
+    
+    def fit_multiobj(self, x):
+        """Función para mantener capacidad de análisis multiobjetivo"""
+        X, C, V = x[0:5], x[5:10], x[10:15]
+        valorization = sum(X[i] * V[i] for i in range(5))
+        cost = sum(X[i] * C[i] for i in range(5))
+        return (valorization, -cost)  # Tupla para análisis
 
     def levy_flight(self, beta=1.5):
         num = math.gamma(1 + beta) * math.sin(math.pi * beta / 2)
@@ -103,18 +130,22 @@ class Individual:
 
     def fitness(self):
         if self.fitness_values is None:
-            self.fitness_values = self.p.fit(self.x)
+            self.fitness_values = self.p.fit(self.x)  # Usa escalarización
         return self.fitness_values
 
+    def fitness_multiobj(self):
+        """Método para obtener fitness multiobjetivo para análisis"""
+        return self.p.fit_multiobj(self.x)
+
     def dominates(self, other):
-        my_fit = self.fitness()
-        other_fit = other.fitness()
+        """Dominancia basada en fitness multiobjetivo para análisis de Pareto"""
+        my_fit = self.fitness_multiobj()
+        other_fit = other.fitness_multiobj()
         return all(m >= o for m, o in zip(my_fit, other_fit)) and any(m > o for m, o in zip(my_fit, other_fit))
 
     def is_better_than(self, other):
-        my_score = self.fitness()[0] + 0.1 * self.fitness()[1]
-        other_score = other.fitness()[0] + 0.1 * other.fitness()[1]
-        return my_score > other_score
+        """Comparación directa basada en fitness escalarizado"""
+        return self.fitness() > other.fitness()
 
     def mantis_move(self, global_best, archive, t, max_iter):
         p = 0.5
@@ -188,7 +219,7 @@ class MSA_Swarm:
         if not self.swarm:
             print("No se pudieron generar soluciones factibles")
             return
-        self.g = max(self.swarm, key=lambda x: x.fitness()[0] + 0.1 * x.fitness()[1])
+        self.g = max(self.swarm, key=lambda x: x.fitness())
         print(f"Inicialización MSA: {len(self.swarm)} mantis factibles")
         self.show_results(0)
 
@@ -198,7 +229,7 @@ class MSA_Swarm:
             new_ind.copy(individual)
             self.archive.append(new_ind)
         else:
-            worst_idx = min(range(len(self.archive)), key=lambda i: self.archive[i].fitness()[0] + 0.1 * self.archive[i].fitness()[1])
+            worst_idx = min(range(len(self.archive)), key=lambda i: self.archive[i].fitness())
             if individual.is_better_than(self.archive[worst_idx]):
                 self.archive[worst_idx].copy(individual)
 
@@ -226,7 +257,8 @@ class MSA_Swarm:
     def show_results(self, t):
         if self.g:
             fit = self.g.fitness()
-            print(f"t: {t}, best_global: valorización={fit[0]}, costo={-fit[1]}")
+            fit_multi = self.g.fitness_multiobj()
+            print(f"t: {t}, best_global: fitness_escalar={fit:.1f}, valorización={fit_multi[0]}, costo={-fit_multi[1]}")
         else:
             print(f"t: {t}, no solution found")
 
@@ -252,8 +284,8 @@ class MSA_Swarm:
                 # Verificar si ya existe una solución similar
                 is_duplicate = False
                 for existing in pareto_front:
-                    if (existing.fitness()[0] == candidate.fitness()[0] and 
-                        existing.fitness()[1] == candidate.fitness()[1]):
+                    if (existing.fitness_multiobj()[0] == candidate.fitness_multiobj()[0] and 
+                        existing.fitness_multiobj()[1] == candidate.fitness_multiobj()[1]):
                         is_duplicate = True
                         break
                 
@@ -270,13 +302,13 @@ class MSA_Swarm:
             return
         
         # Extraer valores de fitness
-        valorizations = [sol.fitness()[0] for sol in self.all_solutions]
-        costs = [-sol.fitness()[1] for sol in self.all_solutions]  # Convertir a positivo
+        valorizations = [sol.fitness_multiobj()[0] for sol in self.all_solutions]
+        costs = [-sol.fitness_multiobj()[1] for sol in self.all_solutions]  # Convertir a positivo
         
         # Calcular frente de Pareto
         pareto_front = self.calculate_pareto_front()
-        pareto_valorizations = [sol.fitness()[0] for sol in pareto_front]
-        pareto_costs = [-sol.fitness()[1] for sol in pareto_front]
+        pareto_valorizations = [sol.fitness_multiobj()[0] for sol in pareto_front]
+        pareto_costs = [-sol.fitness_multiobj()[1] for sol in pareto_front]
         
         # Crear figura con múltiples subgráficos
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
@@ -319,9 +351,9 @@ class MSA_Swarm:
         # Gráfico 4: Análisis de trade-offs
         if len(pareto_front) > 1:
             # Ordenar frente de Pareto por valorización
-            pareto_sorted = sorted(pareto_front, key=lambda x: x.fitness()[0])
-            pareto_val_sorted = [sol.fitness()[0] for sol in pareto_sorted]
-            pareto_cost_sorted = [-sol.fitness()[1] for sol in pareto_sorted]
+            pareto_sorted = sorted(pareto_front, key=lambda x: x.fitness_multiobj()[0])
+            pareto_val_sorted = [sol.fitness_multiobj()[0] for sol in pareto_sorted]
+            pareto_cost_sorted = [-sol.fitness_multiobj()[1] for sol in pareto_sorted]
             
             ax4.plot(pareto_val_sorted, pareto_cost_sorted, 'ro-', linewidth=2, 
                     markersize=8, label='Frente de Pareto')
@@ -359,9 +391,19 @@ class MSA_Swarm:
         print(f"  Desviación estándar: {np.std(costs):.1f}")
         
         print(f"\nMejores 5 soluciones del Frente de Pareto:")
-        pareto_sorted = sorted(pareto_front, key=lambda x: x.fitness()[0] + 0.1 * x.fitness()[1], reverse=True)
+        pareto_sorted = sorted(pareto_front, key=lambda x: x.fitness(), reverse=True)
         for i, sol in enumerate(pareto_sorted[:5]):
-            print(f"  {i+1}. Valorización: {sol.fitness()[0]:.1f}, Costo: {-sol.fitness()[1]:.1f}")
+            fit_multi = sol.fitness_multiobj()
+            print(f"  {i+1}. Valorización: {fit_multi[0]:.1f}, Costo: {-fit_multi[1]:.1f}, Fitness: {sol.fitness():.1f}")
+
+        best_val_solution = max(self.all_solutions, key=lambda ind: ind.fitness_multiobj()[0])
+        val, cost = best_val_solution.fitness_multiobj()
+        print("\n== MEJOR VALORIZACIÓN FACTIBLE ENCONTRADA ==")
+        print(f"Valorización: {val}")
+        print(f"Costo: {-cost}")
+        print(f"Configuración:")
+        print(best_val_solution)
+
 
     def optimizer(self):
         print("=== MANTIS SEARCH ALGORITHM - PROBLEMA ANUNCIOS ===")
@@ -373,8 +415,10 @@ class MSA_Swarm:
                 print(f"Mejor solución: {self.g}")
                 X, C, V = self.g.x[0:5], self.g.x[5:10], self.g.x[10:15]
                 fit = self.g.fitness()
-                print(f"Valorización total: {fit[0]}")
-                print(f"Costo total: {-fit[1]}")
+                fit_multi = self.g.fitness_multiobj()
+                print(f"Fitness escalarizado: {fit:.1f}")
+                print(f"Valorización total: {fit_multi[0]}")
+                print(f"Costo total: {-fit_multi[1]}")
                 print(f"Tamaño del archivo: {len(self.archive)}")
             
             # ✅ AGREGADO: Generar gráficos de Pareto
